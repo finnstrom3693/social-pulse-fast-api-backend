@@ -1,0 +1,356 @@
+# app/auth.py
+from datetime import datetime, timedelta
+from jose import JWTError, jwt
+from passlib.context import CryptContext
+from fastapi import Request
+from fastapi import Depends, HTTPException, status
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from sqlalchemy.orm import Session
+from . import models, database
+from .models import RevokedToken
+
+
+SECRET_KEY = "faizal-secret-key-77"
+ALGORITHM = "HS256"
+ACCESS_TOKEN_EXPIRE_MINUTES = 60
+
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+security = HTTPBearer()
+
+def get_password_hash(password):
+    return pwd_context.hash(password)
+
+def verify_password(plain_password, hashed_password):
+    return pwd_context.verify(plain_password, hashed_password)
+
+def create_access_token(data: dict, expires_delta: timedelta = None):
+    to_encode = data.copy()
+    expire = datetime.utcnow() + (expires_delta or timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES))
+    to_encode.update({"exp": expire})
+    return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+
+def get_user_by_email(db: Session, email: str):
+    return db.query(models.User).filter(models.User.email == email).first()
+
+def authenticate_user(db: Session, email: str, password: str):
+    user = get_user_by_email(db, email)
+    if not user or not verify_password(password, user.hashed_password):
+        return None
+    return user
+
+async def get_current_user(
+    request: Request,
+    credentials: HTTPAuthorizationCredentials = Depends(security),
+    db: Session = Depends(database.get_db)
+):
+    credentials_exception = HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Could not validate credentials",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+    
+    try:
+        token = credentials.credentials
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        email: str = payload.get("sub")
+        if email is None:
+            raise credentials_exception
+        revoked = db.query(RevokedToken).filter(RevokedToken.token == token).first()
+        if revoked:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Token has been revoked. Please login again.",
+            )
+    except JWTError as e:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=f"Invalid token: {str(e)}",
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Could not validate credentials",
+        )
+        
+
+    user = get_user_by_email(db, email)
+    if user is None:
+        raise credentials_exception
+    return user
+
+def cleanup_expired_revoked_tokens(db: Session):
+    now = datetime.utcnow()
+    expired_tokens = db.query(RevokedToken).filter(
+        RevokedToken.revoked_at < now - timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    ).all()
+    
+    for token in expired_tokens:
+        db.delete(token)
+    db.commit()
+
+# app/crud.py
+from sqlalchemy.orm import Session
+from sqlalchemy.orm import joinedload
+from . import models, schemas
+
+def create_post(db: Session, post: schemas.PostCreate, author_id: int):
+    db_post = models.Post(content=post.content, author_id=author_id)
+    db.add(db_post)
+    db.commit()
+    db.refresh(db_post)
+    return db_post
+
+def get_posts(db: Session, author_id: int, skip: int = 0, limit: int = 10):
+    return (
+        db.query(models.Post)
+        .options(joinedload(models.Post.author))
+        .filter(models.Post.author_id == author_id)
+        .order_by(models.Post.created_at.desc())
+        .offset(skip)
+        .limit(limit)
+        .all()
+    )
+
+def get_post(db: Session, post_id: int):
+    return db.query(models.Post).options(
+        joinedload(models.Post.author)  # Changed from author_obj to author
+    ).filter(models.Post.id == post_id).first()
+
+def update_post(db: Session, post_id: int, post_update: schemas.PostCreate, user_id: int):
+    db_post = get_post(db, post_id)
+    if db_post is None or db_post.author_id != user_id:
+        return None
+    db_post.content = post_update.content
+    db.commit()
+    db.refresh(db_post)
+    return db_post
+
+def delete_post(db: Session, post_id: int, user_id: int):
+    db_post = get_post(db, post_id)
+    if db_post is None or db_post.author_id != user_id:
+        return None
+    db.delete(db_post)
+    db.commit()
+    return db_post
+
+# app/database.py
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker, declarative_base
+
+DATABASE_URL = "sqlite:///./microblog.db"
+
+engine = create_engine(
+    DATABASE_URL, connect_args={"check_same_thread": False}
+)
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+
+Base = declarative_base()
+
+# Proper reusable dependency
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
+# app/main.py
+from fastapi import FastAPI, Depends, HTTPException
+from fastapi import Request
+from fastapi.responses import JSONResponse
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from sqlalchemy.orm import Session
+from . import models, schemas, crud, database, auth, users
+from .models import RevokedToken
+
+models.Base.metadata.create_all(bind=database.engine)
+app = FastAPI(title="Microblog API with Auth")
+app.include_router(users.router)
+
+@app.get("/posts/", response_model=list[schemas.PostRead])
+def read_posts(
+    skip: int = 0,
+    limit: int = 10,
+    db: Session = Depends(database.get_db),
+    current_user: models.User = Depends(auth.get_current_user)
+):
+    posts = crud.get_posts(db, author_id=current_user.id, skip=skip, limit=limit)
+    return posts
+
+@app.get("/posts/{post_id}", response_model=schemas.PostRead)
+def read_post(
+    post_id: int,
+    db: Session = Depends(database.get_db),
+    current_user: models.User = Depends(auth.get_current_user)
+):
+    post = crud.get_post(db, post_id=post_id)
+    if post is None:
+        raise HTTPException(status_code=404, detail="Post not found")
+    return post
+
+@app.post("/posts/", response_model=schemas.PostRead)
+def create_post(
+    post: schemas.PostCreate,
+    request: Request,
+    db: Session = Depends(database.get_db),
+    current_user: models.User = Depends(auth.get_current_user)
+):
+    try:
+        return crud.create_post(db, post, author_id=current_user.id)
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e),
+        )
+
+@app.put("/posts/{post_id}", response_model=schemas.PostRead)
+def edit_post(
+    post_id: int,
+    post: schemas.PostCreate,
+    db: Session = Depends(database.get_db),
+    current_user=Depends(auth.get_current_user)
+):
+    updated = crud.update_post(db, post_id, post, current_user.id)
+    if updated is None:
+        raise HTTPException(status_code=403, detail="Not authorized or post not found")
+    return updated
+
+@app.delete("/posts/{post_id}")
+def delete_post(
+    post_id: int,
+    db: Session = Depends(database.get_db),
+    current_user=Depends(auth.get_current_user)
+):
+    deleted = crud.delete_post(db, post_id, current_user.id)
+    if deleted is None:
+        raise HTTPException(status_code=403, detail="Not authorized or post not found")
+    return JSONResponse(content={"message": "Delete successfully"}, status_code=200)
+
+@app.get("/verify-token")
+async def verify_token(current_user: models.User = Depends(auth.get_current_user)):
+    return {"message": "Token is valid", "user": current_user.username}
+
+@app.post("/logout")
+def logout(
+    credentials: HTTPAuthorizationCredentials = Depends(HTTPBearer()),
+    db: Session = Depends(database.get_db)
+):
+    token = credentials.credentials
+
+    # Cleanup before checking
+    auth.cleanup_expired_revoked_tokens(db)
+
+    # Check if token already revoked
+    already = db.query(RevokedToken).filter(RevokedToken.token == token).first()
+    if already:
+        return JSONResponse(content={"message": "Already logged out"}, status_code=200)
+
+    revoked = RevokedToken(token=token)
+    db.add(revoked)
+    db.commit()
+    return JSONResponse(content={"message": "Logout successful. Token revoked."}, status_code=200)
+
+# app/models.py
+from sqlalchemy import Column, Integer, String, Text, DateTime, ForeignKey, func
+from sqlalchemy.orm import relationship
+from .database import Base
+from sqlalchemy import Boolean
+
+class User(Base):
+    __tablename__ = "users"
+
+    id = Column(Integer, primary_key=True, index=True)
+    email = Column(String(255), unique=True, nullable=False, index=True)
+    username = Column(String(50), unique=True, nullable=False)
+    hashed_password = Column(String, nullable=False)
+
+    posts = relationship("Post", back_populates="author")
+
+
+class Post(Base):
+    __tablename__ = "posts"
+
+    id = Column(Integer, primary_key=True, index=True)
+    author_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    content = Column(Text, nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    author = relationship("User", back_populates="posts")
+
+class RevokedToken(Base):
+    __tablename__ = "revoked_tokens"
+
+    id = Column(Integer, primary_key=True, index=True)
+    token = Column(String, unique=True, index=True, nullable=False)
+    revoked_at = Column(DateTime(timezone=True), server_default=func.now())
+
+# app/schemas.py
+from pydantic import BaseModel, EmailStr
+from datetime import datetime
+
+# -------- User --------
+class UserBase(BaseModel):
+    email: EmailStr
+    username: str
+
+class UserCreate(UserBase):
+    email: EmailStr
+    username: str
+    password: str
+
+class UserRead(UserBase):
+    id: int
+    class Config:
+        orm_mode = True
+
+# -------- Post --------
+class PostBase(BaseModel):
+    content: str
+
+class PostCreate(PostBase):
+    pass
+
+class PostRead(PostBase):
+    id: int
+    author_id: int
+    created_at: datetime
+    author: UserRead
+    
+    class Config:
+        from_attributes = True
+    
+    # app/users.py
+from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy.orm import Session
+from pydantic import BaseModel, EmailStr
+from . import models, schemas, auth, database
+
+router = APIRouter()
+
+class LoginRequest(BaseModel):
+    email: EmailStr
+    password: str
+
+@router.post("/register", response_model=schemas.UserRead)
+def register(user: schemas.UserCreate, db: Session = Depends(database.get_db)):
+    # Check if email exists
+    if db.query(models.User).filter(models.User.email == user.email).first():
+        raise HTTPException(status_code=400, detail="Email already registered")
+    # Check if username exists
+    if db.query(models.User).filter(models.User.username == user.username).first():
+        raise HTTPException(status_code=400, detail="Username already taken")
+
+    hashed_password = auth.get_password_hash(user.password)
+    db_user = models.User(email=user.email, username=user.username, hashed_password=hashed_password)
+    db.add(db_user)
+    db.commit()
+    db.refresh(db_user)
+    return db_user
+
+@router.post("/login")
+def login(login_data: LoginRequest, db: Session = Depends(database.get_db)):
+    user = auth.authenticate_user(db, login_data.email, login_data.password)
+    if not user:
+        raise HTTPException(status_code=401, detail="Invalid email or password")
+    token = auth.create_access_token({"sub": user.email})
+    return {"access_token": token, "token_type": "bearer"}
