@@ -28,8 +28,10 @@ def get_post(db: Session, post_id: int):
 
 def update_post(db: Session, post_id: int, post_update: schemas.PostCreate, user_id: int):
     db_post = get_post(db, post_id)
-    if db_post is None or db_post.author_id != user_id:
-        return None
+    if db_post is None:
+        return "not_found"
+    if db_post.author_id != user_id:
+        return "unauthorized"
     db_post.content = post_update.content
     db.commit()
     db.refresh(db_post)
@@ -37,8 +39,10 @@ def update_post(db: Session, post_id: int, post_update: schemas.PostCreate, user
 
 def delete_post(db: Session, post_id: int, user_id: int):
     db_post = get_post(db, post_id)
-    if db_post is None or db_post.author_id != user_id:
-        return None
+    if db_post is None:
+        return "not_found"
+    if db_post.author_id != user_id:
+        return "unauthorized"
     db.delete(db_post)
     db.commit()
     return db_post

@@ -6,10 +6,21 @@ from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.orm import Session
 from . import models, schemas, crud, database, auth, users
 from .models import RevokedToken
+from fastapi.middleware.cors import CORSMiddleware
+
 
 models.Base.metadata.create_all(bind=database.engine)
 app = FastAPI(title="Microblog API with Auth")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+    expose_headers=["*"]
+)
 app.include_router(users.router)
+
 
 @app.get("/posts/", response_model=list[schemas.PostRead])
 def read_posts(
@@ -48,26 +59,21 @@ def create_post(
         )
 
 @app.put("/posts/{post_id}", response_model=schemas.PostRead)
-def edit_post(
-    post_id: int,
-    post: schemas.PostCreate,
-    db: Session = Depends(database.get_db),
-    current_user=Depends(auth.get_current_user)
-):
+def edit_post(post_id: int, post: schemas.PostCreate, db: Session = Depends(database.get_db), current_user=Depends(auth.get_current_user)):
     updated = crud.update_post(db, post_id, post, current_user.id)
-    if updated is None:
-        raise HTTPException(status_code=403, detail="Not authorized or post not found")
+    if updated == "not_found":
+        raise HTTPException(status_code=404, detail="Post not found")
+    elif updated == "unauthorized":
+        raise HTTPException(status_code=403, detail="Not authorized to edit this post")
     return updated
 
 @app.delete("/posts/{post_id}")
-def delete_post(
-    post_id: int,
-    db: Session = Depends(database.get_db),
-    current_user=Depends(auth.get_current_user)
-):
+def delete_post(post_id: int, db: Session = Depends(database.get_db), current_user=Depends(auth.get_current_user)):
     deleted = crud.delete_post(db, post_id, current_user.id)
-    if deleted is None:
-        raise HTTPException(status_code=403, detail="Not authorized or post not found")
+    if deleted == "not_found":
+        raise HTTPException(status_code=404, detail="Post not found")
+    elif deleted == "unauthorized":
+        raise HTTPException(status_code=403, detail="Not authorized to delete this post")
     return JSONResponse(content={"message": "Delete successfully"}, status_code=200)
 
 @app.get("/verify-token")
