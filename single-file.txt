@@ -384,5 +384,3 @@ def get_user_posts(
 ):
     return crud.get_posts(db, author_id=user_id, skip=skip, limit=limit)
 
-
-
