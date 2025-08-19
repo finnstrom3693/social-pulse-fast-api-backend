@@ -238,7 +238,11 @@ def delete_post(post_id: int, db: Session = Depends(database.get_db), current_us
 
 @app.get("/verify-token")
 async def verify_token(current_user: models.User = Depends(auth.get_current_user)):
-    return {"message": "Token is valid", "user": current_user.username}
+    return {
+        "message": "Token is valid", 
+        "user": current_user.username,
+        "id": current_user.id  # Add this line to include the user ID
+    }
 
 @app.post("/logout")
 def logout(
@@ -383,4 +387,9 @@ def get_user_posts(
     current_user: models.User = Depends(auth.get_current_user)  # Logged-in user
 ):
     return crud.get_posts(db, author_id=user_id, skip=skip, limit=limit)
+
+@router.get("/users/me", response_model=schemas.UserRead)
+def get_me(current_user: models.User = Depends(auth.get_current_user)):
+    return current_user
+
 

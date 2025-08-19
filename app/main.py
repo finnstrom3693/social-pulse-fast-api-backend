@@ -78,7 +78,11 @@ def delete_post(post_id: int, db: Session = Depends(database.get_db), current_us
 
 @app.get("/verify-token")
 async def verify_token(current_user: models.User = Depends(auth.get_current_user)):
-    return {"message": "Token is valid", "user": current_user.username}
+    return {
+        "message": "Token is valid", 
+        "user": current_user.username,
+        "id": current_user.id  # Add this line to include the user ID
+    }
 
 @app.post("/logout")
 def logout(
