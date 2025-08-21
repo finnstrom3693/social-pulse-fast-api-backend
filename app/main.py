@@ -4,7 +4,7 @@ from fastapi import Request
 from fastapi.responses import JSONResponse
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.orm import Session
-from . import models, schemas, crud, database, auth, users
+from . import models, schemas, crud, database, auth, users, messages
 from .models import RevokedToken
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -20,6 +20,7 @@ app.add_middleware(
     expose_headers=["*"]
 )
 app.include_router(users.router)
+app.include_router(messages.router)
 
 
 @app.get("/posts/", response_model=list[schemas.PostRead])

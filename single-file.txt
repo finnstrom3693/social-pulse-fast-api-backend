@@ -88,55 +88,6 @@ def cleanup_expired_revoked_tokens(db: Session):
         db.delete(token)
     db.commit()
 
-# app/crud.py
-from sqlalchemy.orm import Session
-from sqlalchemy.orm import joinedload
-from . import models, schemas
-
-def create_post(db: Session, post: schemas.PostCreate, author_id: int):
-    db_post = models.Post(content=post.content, author_id=author_id)
-    db.add(db_post)
-    db.commit()
-    db.refresh(db_post)
-    return db_post
-
-def get_posts(db: Session, author_id: int, skip: int = 0, limit: int = 10):
-    return (
-        db.query(models.Post)
-        .options(joinedload(models.Post.author))
-        .filter(models.Post.author_id == author_id)
-        .order_by(models.Post.created_at.desc())
-        .offset(skip)
-        .limit(limit)
-        .all()
-    )
-
-def get_post(db: Session, post_id: int):
-    return db.query(models.Post).options(
-        joinedload(models.Post.author)  # Changed from author_obj to author
-    ).filter(models.Post.id == post_id).first()
-
-def update_post(db: Session, post_id: int, post_update: schemas.PostCreate, user_id: int):
-    db_post = get_post(db, post_id)
-    if db_post is None:
-        return "not_found"
-    if db_post.author_id != user_id:
-        return "unauthorized"
-    db_post.content = post_update.content
-    db.commit()
-    db.refresh(db_post)
-    return db_post
-
-def delete_post(db: Session, post_id: int, user_id: int):
-    db_post = get_post(db, post_id)
-    if db_post is None:
-        return "not_found"
-    if db_post.author_id != user_id:
-        return "unauthorized"
-    db.delete(db_post)
-    db.commit()
-    return db_post
-
 # app/database.py
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker, declarative_base
@@ -164,7 +115,7 @@ from fastapi import Request
 from fastapi.responses import JSONResponse
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.orm import Session
-from . import models, schemas, crud, database, auth, users
+from . import models, schemas, crud, database, auth, users, messages
 from .models import RevokedToken
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -180,6 +131,7 @@ app.add_middleware(
     expose_headers=["*"]
 )
 app.include_router(users.router)
+app.include_router(messages.router)
 
 
 @app.get("/posts/", response_model=list[schemas.PostRead])
@@ -264,6 +216,33 @@ def logout(
     db.commit()
     return JSONResponse(content={"message": "Logout successful. Token revoked."}, status_code=200)
 
+# app/messages.py
+from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy.orm import Session
+from . import models, schemas, auth, database, crud
+
+router = APIRouter(prefix="/messages", tags=["messages"])
+
+@router.post("/", response_model=schemas.MessageRead)
+def send_message(
+    message: schemas.MessageCreate,
+    db: Session = Depends(database.get_db),
+    current_user: models.User = Depends(auth.get_current_user)
+):
+    if message.receiver_id == current_user.id:
+        raise HTTPException(status_code=400, detail="Cannot send message to yourself")
+    return crud.send_message(db, sender_id=current_user.id, message=message)
+
+@router.get("/{user_id}", response_model=list[schemas.MessageRead])
+def get_conversation(
+    user_id: int,
+    skip: int = 0,
+    limit: int = 50,
+    db: Session = Depends(database.get_db),
+    current_user: models.User = Depends(auth.get_current_user)
+):
+    return crud.get_conversation(db, user1_id=current_user.id, user2_id=user_id, skip=skip, limit=limit)
+
 # app/models.py
 from sqlalchemy import Column, Integer, String, Text, DateTime, ForeignKey, func
 from sqlalchemy.orm import relationship
@@ -298,6 +277,18 @@ class RevokedToken(Base):
     token = Column(String, unique=True, index=True, nullable=False)
     revoked_at = Column(DateTime(timezone=True), server_default=func.now())
 
+class Message(Base):
+    __tablename__ = "messages"
+
+    id = Column(Integer, primary_key=True, index=True)
+    sender_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    receiver_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    content = Column(Text, nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    sender = relationship("User", foreign_keys=[sender_id])
+    receiver = relationship("User", foreign_keys=[receiver_id])
+
 # app/schemas.py
 from pydantic import BaseModel, EmailStr
 from datetime import datetime
@@ -330,6 +321,22 @@ class PostRead(PostBase):
     created_at: datetime
     author: UserRead
     
+    class Config:
+        from_attributes = True
+
+# --- Message ---
+class MessageBase(BaseModel):
+    content: str
+
+class MessageCreate(MessageBase):
+    receiver_id: int  # who to send the message to
+
+class MessageRead(MessageBase):
+    id: int
+    sender_id: int
+    receiver_id: int
+    created_at: datetime
+
     class Config:
         from_attributes = True
 
