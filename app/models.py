@@ -21,9 +21,11 @@ class Post(Base):
     id = Column(Integer, primary_key=True, index=True)
     author_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     content = Column(Text, nullable=False)
+    image_url = Column(String(500), nullable=True)  # <-- add this
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     author = relationship("User", back_populates="posts")
+
 
 class RevokedToken(Base):
     __tablename__ = "revoked_tokens"

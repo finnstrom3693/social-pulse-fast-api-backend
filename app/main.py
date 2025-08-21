@@ -104,3 +104,13 @@ def logout(
     db.add(revoked)
     db.commit()
     return JSONResponse(content={"message": "Logout successful. Token revoked."}, status_code=200)
+
+@app.get("/explore", response_model=list[schemas.PostRead])
+def explore_posts(
+    skip: int = 0,
+    limit: int = 10,
+    db: Session = Depends(database.get_db),
+    current_user: models.User = Depends(auth.get_current_user)  # Still requires login
+):
+    posts = crud.get_explore_posts(db, skip=skip, limit=limit)
+    return posts

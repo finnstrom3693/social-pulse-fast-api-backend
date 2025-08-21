@@ -5,7 +5,11 @@ from . import models, schemas
 from sqlalchemy import or_, and_
 
 def create_post(db: Session, post: schemas.PostCreate, author_id: int):
-    db_post = models.Post(content=post.content, author_id=author_id)
+    db_post = models.Post(
+        content=post.content,
+        image_url=post.image_url,   # <-- save image URL
+        author_id=author_id
+    )
     db.add(db_post)
     db.commit()
     db.refresh(db_post)
@@ -34,6 +38,7 @@ def update_post(db: Session, post_id: int, post_update: schemas.PostCreate, user
     if db_post.author_id != user_id:
         return "unauthorized"
     db_post.content = post_update.content
+    db_post.image_url = post_update.image_url  # <-- update image URL too
     db.commit()
     db.refresh(db_post)
     return db_post
@@ -115,3 +120,13 @@ def get_conversation(db: Session, user1_id: int, user2_id: int, skip: int = 0, l
         ))
     
     return result
+
+def get_explore_posts(db: Session, skip: int = 0, limit: int = 10):
+    return (
+        db.query(models.Post)
+        .options(joinedload(models.Post.author))
+        .order_by(models.Post.created_at.desc())
+        .offset(skip)
+        .limit(limit)
+        .all()
+    )
