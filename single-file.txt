@@ -95,7 +95,11 @@ from . import models, schemas
 from sqlalchemy import or_, and_
 
 def create_post(db: Session, post: schemas.PostCreate, author_id: int):
-    db_post = models.Post(content=post.content, author_id=author_id)
+    db_post = models.Post(
+        content=post.content,
+        image_url=post.image_url,   # <-- save image URL
+        author_id=author_id
+    )
     db.add(db_post)
     db.commit()
     db.refresh(db_post)
@@ -124,6 +128,7 @@ def update_post(db: Session, post_id: int, post_update: schemas.PostCreate, user
     if db_post.author_id != user_id:
         return "unauthorized"
     db_post.content = post_update.content
+    db_post.image_url = post_update.image_url  # <-- update image URL too
     db.commit()
     db.refresh(db_post)
     return db_post
@@ -404,9 +409,11 @@ class Post(Base):
     id = Column(Integer, primary_key=True, index=True)
     author_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     content = Column(Text, nullable=False)
+    image_url = Column(String(500), nullable=True)  # <-- add this
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     author = relationship("User", back_populates="posts")
+
 
 class RevokedToken(Base):
     __tablename__ = "revoked_tokens"
@@ -449,41 +456,7 @@ class UserRead(UserBase):
 # -------- Post --------
 class PostBase(BaseModel):
     content: str
-
-class PostCreate(PostBase):
-    pass
-
-class PostRead(PostBase):
-    id: int
-    author_id: int
-    created_at: datetime
-    author: UserRead
-    
-    class Config:
-        from_attributes = True
-
-# app/schemas.py
-from pydantic import BaseModel, EmailStr
-from datetime import datetime
-
-# -------- User --------
-class UserBase(BaseModel):
-    email: EmailStr
-    username: str
-
-class UserCreate(UserBase):
-    email: EmailStr
-    username: str
-    password: str
-
-class UserRead(UserBase):
-    id: int
-    class Config:
-        orm_mode = True
-
-# -------- Post --------
-class PostBase(BaseModel):
-    content: str
+    image_url: str | None = None   # <-- add optional image_url
 
 class PostCreate(PostBase):
     pass
